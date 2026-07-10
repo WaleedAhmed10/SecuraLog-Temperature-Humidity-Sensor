@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, simpledialog, messagebox
 import serial
+import os
 import time
 import threading
 import queue
@@ -9,7 +10,6 @@ from datetime import datetime
 from PIL import Image, ImageTk
 
 BAUD_RATE = 9600
-
 stop_event = threading.Event()
 msg_queue = queue.Queue()
 
@@ -53,17 +53,20 @@ def listen_to_port(port_name):
                 raw_line = ser.readline().decode('utf-8', errors='ignore').strip()
                 if raw_line:
                     parsed_data = parse_fluke_data(raw_line)
-                    msg_queue.put({
-                        "type": "data", 
-                        "port": port_name, 
+                    msg_queue.put({ "type": "data",  "port": port_name, 
                         "parsed": parsed_data
                     })
             time.sleep(0.1)
+            
     except serial.SerialException as e:
         if "Access is denied" in str(e):
             msg_queue.put({"type": "status", "msg": f"[BLOCKED] {port_name} locked."})
+        elif "ClearCommError" in str(e) or "device reports readiness" in str(e):
+            msg_queue.put({"type": "status", "msg": f"[DISCONNECTED] {port_name} removed."})
+            
     except Exception:
         pass
+        
     finally:
         if 'ser' in locals() and ser.is_open:
             ser.close()
@@ -72,13 +75,14 @@ class FlukeLoggerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Temperature & Humidity Sensor - RSPK Services Lab")
-        self.root.geometry("1000x650")         
+        self.root.geometry("1000x650")
         self.current_date = datetime.now().strftime('%Y-%m-%d')
         self.trees = {}  
         self.setup_ui()
         stop_event.set()        
         self.process_queue()
         self.auto_save_backup()
+        self.root.after(100, self.start_logging)
 
     def setup_ui(self):
         BG_COLOR = "grey"
@@ -91,7 +95,7 @@ class FlukeLoggerApp:
         style.configure("TNotebook", background=BG_COLOR, borderwidth=0)
         style.configure("TNotebook.Tab", background="#A0A0A0", foreground="black", font=("Arial", 10, "bold"), padding=[10, 2])
         style.map("TNotebook.Tab", background=[("selected", LOGS_BG)])
-        style.configure("TFrame", background=BG_COLOR)        
+        style.configure("TFrame", background=BG_COLOR)
         style.configure("Treeview", background=LOGS_BG, fieldbackground=LOGS_BG, foreground="black", rowheight=25)
         style.configure("Treeview.Heading", background="#A0A0A0", foreground="black", font=("Arial", 10, "bold"))
 
@@ -197,14 +201,15 @@ class FlukeLoggerApp:
         
         if filename is None:
             filename = f"Fluke_Log_{selected_date}.csv"
-            
         try:
-            with open(filename, mode='w', newline='', encoding='utf-8') as file:
+            with open(filename, mode='a', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(['Date', 'Time', 'COM_Port', 'Temp_1', 'Hum_1', 'Temp_2', 'Hum_2']) 
                 for row_id in active_tree.get_children():
                     row_data = active_tree.item(row_id)['values']
                     writer.writerow(row_data)
+                    os.path.exists(filename)
+
             if show_popup:
                 messagebox.showinfo("Success", f"Data saved successfully to:\n{filename}")
         except Exception as e:
