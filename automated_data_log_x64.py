@@ -3,6 +3,7 @@ from tkinter import ttk, simpledialog, messagebox
 import serial
 import serial.tools.list_ports
 import os
+import sys
 import time
 import threading
 import queue
@@ -11,9 +12,14 @@ from datetime import datetime
 from PIL import Image, ImageTk
 
 BAUD_RATE = 9600
-PORT_SCAN_INTERVAL = 2
+PORT_SCAN_INTERVAL = 20
 PORT_RETRY_COOLDOWN = 30
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 msg_queue = queue.Queue()
 
 def parse_fluke_data(raw_line):
@@ -116,7 +122,7 @@ class FlukeLoggerApp:
         self.port_threads = {}
         self.port_cooldowns = {}
         
-        self.auto_save_interval = 30000  # Save every 30 seconds
+        self.auto_save_interval = 30000
         self.last_save_time = {}
         self.pending_save = False
         
@@ -257,7 +263,7 @@ class FlukeLoggerApp:
                         next(reader, None)
                         tree = self.trees[date_str]
                         for row in reader:
-                            if len(row) >= 7:  # Make sure we have all columns
+                            if len(row) >= 7:
                                 tree.insert("", tk.END, values=row[:7])
                 except Exception as e:
                     print(f"Error loading data from {filename}: {e}")
@@ -472,7 +478,8 @@ class FlukeLoggerApp:
         if final_save_count > 0:
             messagebox.showinfo("Auto-Save Complete", 
                 f"All data has been automatically saved.\n"
-                f"Saved {final_save_count} data files and backups.")
+                f"Saved {final_save_count} data files and backups."
+                f"Saving to: {BASE_DIR}")
         
         for csv_file in self.csv_files.values():
             try:

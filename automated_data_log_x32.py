@@ -5,6 +5,7 @@ import tkMessageBox as messagebox
 import serial
 import serial.tools.list_ports
 import os
+import sys
 import time
 import threading
 import Queue as queue
@@ -15,7 +16,12 @@ from PIL import Image, ImageTk
 BAUD_RATE = 9600
 PORT_SCAN_INTERVAL = 2
 PORT_RETRY_COOLDOWN = 30
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 msg_queue = queue.Queue()
 
 def parse_fluke_data(raw_line):
@@ -56,7 +62,12 @@ def get_available_ports():
     (some systems, especially with several USB-serial adapters, assign port
     numbers well above 32).
     """
-    ports = [p.device for p in serial.tools.list_ports.comports()]
+    ports = []
+    for p in serial.tools.list_ports.comports():
+        if isinstance(p, tuple):
+            ports.append(p[0])
+        else:
+            ports.append(p.device)
 
     def sort_key(name):
         digits = ''.join(ch for ch in name if ch.isdigit())
@@ -73,8 +84,10 @@ def listen_to_port(port_name, port_stop_event):
         msg_queue.put({"type": "status", "msg": "[SUCCESS] Connected to {0}.".format(port_name)})
         while not port_stop_event.is_set():
             try:
-                if ser.in_waiting > 0:
-                    raw_line = ser.readline().decode('utf-8', 'ignore').strip()
+                waiting = ser.in_waiting if hasattr(ser, 'in_waiting') else ser.inWaiting()
+                if waiting > 0:
+                    raw_bytes = ser.readline()
+                    raw_line = raw_bytes.decode('utf-8', 'ignore').strip()
                     if raw_line:
                         parsed_data = parse_fluke_data(raw_line)
                         msg_queue.put({"type": "data", "port": port_name,
@@ -237,8 +250,6 @@ class FlukeLoggerApp:
         filename = os.path.join(BASE_DIR, "Fluke_Log_{0}.csv".format(date_str))
 
         file_exists = os.path.isfile(filename)
-        # Python 2.7's csv module requires binary mode files (no 'newline' or
-        # 'encoding' kwargs exist on open() in 2.7)
         csv_file = open(filename, 'ab')
         writer = csv.writer(csv_file)
 
@@ -403,6 +414,9 @@ class FlukeLoggerApp:
                     self.create_backup(self.current_date)
 
                 self.pending_save = True
+
+            elif msg["type"] == "status":
+                self.status_label.config(text=msg["msg"], fg="dark blue")
 
             elif msg["type"] == "port_closed":
                 self.port_threads.pop(msg["port"], None)
