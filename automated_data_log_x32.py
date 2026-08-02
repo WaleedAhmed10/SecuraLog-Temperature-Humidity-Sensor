@@ -80,8 +80,11 @@ def listen_to_port(port_name, port_stop_event):
     ser = None
     close_reason = "stopped"
     try:
+        time.sleep(0.5)
         ser = serial.Serial(port_name, BAUD_RATE, timeout=1)
         msg_queue.put({"type": "status", "msg": "[SUCCESS] Connected to {0}.".format(port_name)})
+        time.sleep(0.5)
+        
         while not port_stop_event.is_set():
             try:
                 waiting = ser.in_waiting if hasattr(ser, 'in_waiting') else ser.inWaiting()
@@ -102,13 +105,15 @@ def listen_to_port(port_name, port_stop_event):
     except serial.SerialException as e:
         msg = str(e)
         if "Access is denied" in msg or "PermissionError" in msg:
-            msg_queue.put({"type": "status", "msg": "[BLOCKED] {0} is in use by another program.".format(port_name)})
+            msg_queue.put({"type": "status", "msg": "[INFO] {0} is currently in use, will retry...".format(port_name)})
+            close_reason = "open_failed"
+            msg_queue.put({"type": "port_closed", "port": port_name, "reason": "retry_later"})
         else:
-            msg_queue.put({"type": "status", "msg": "[ERROR] Could not open {0}: {1}".format(port_name, msg)})
-        close_reason = "open_failed"
+            msg_queue.put({"type": "status", "msg": "[INFO] Could not open {0}, will retry...".format(port_name)})
+            close_reason = "open_failed"
 
     except Exception as e:
-        msg_queue.put({"type": "status", "msg": "[ERROR] Unexpected error on {0}: {1}".format(port_name, e)})
+        msg_queue.put({"type": "status", "msg": "[INFO] Retrying connection to {0}...".format(port_name)})
         close_reason = "open_failed"
 
     finally:
@@ -117,8 +122,9 @@ def listen_to_port(port_name, port_stop_event):
                 ser.close()
         except Exception:
             pass
-        msg_queue.put({"type": "port_closed", "port": port_name, "reason": close_reason})
-
+        if close_reason != "retry_later":
+            msg_queue.put({"type": "port_closed", "port": port_name, "reason": close_reason})
+    
 class FlukeLoggerApp:
     def __init__(self, root):
         self.root = root
@@ -186,6 +192,7 @@ class FlukeLoggerApp:
 
         center_text_frame = tk.Frame(header_frame, bg=BG_COLOR)
         center_text_frame.grid(row=0, column=1)
+
 
         title_lbl = tk.Label(center_text_frame, text="RSPK Services Lab Islamabad", font=("Arial", 18, "bold"), fg=TEXT_COLOR, bg=BG_COLOR)
         title_lbl.pack(side=tk.TOP, anchor=tk.CENTER)
@@ -434,9 +441,8 @@ class FlukeLoggerApp:
         self.scan_and_connect_ports()
 
     def scan_and_connect_ports(self):
-        """Look for any COM port Windows currently sees and, if we're not already
-        listening to it, spin up a thread for it. Runs repeatedly while logging is
-        active so devices plugged in later (or on a different Windows machine with
+        """Look for any COM port Windows currently sees and, if not already listening to it, spin up a thread for it. 
+        Runs repeatedly while logging is active so devices plugged in later (or on a different Windows machine with
         different port numbers/counts) are picked up automatically."""
         if not self.logging_active:
             return
