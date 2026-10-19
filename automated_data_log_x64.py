@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, simpledialog, messagebox
+from tkinter import ttk, simpledialog, messagebox, scrolledtext
 import serial
 import serial.tools.list_ports
 import os
@@ -8,19 +8,155 @@ import time
 import threading
 import queue
 import csv
+import hashlib
+import re
+import random
 from datetime import datetime
 from PIL import Image, ImageTk
 
 BAUD_RATE = 9600
 PORT_SCAN_INTERVAL = 20
 PORT_RETRY_COOLDOWN = 30
+MAX_LINE_LENGTH = 500
+ALLOWED_LINE_CHARS = re.compile(r'^[\x20-\x7E]*$')  # printable ASCII only
+DATE_STR_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+AUDIT_LOG_PATH = os.path.join(BASE_DIR, "audit_log.txt")
+
 msg_queue = queue.Queue()
+
+SECURITY_STATS_LOCK = threading.Lock()
+SECURITY_STATS = {
+    "packets_validated": 0,
+    "packets_rejected_length": 0,
+    "packets_rejected_chars": 0,
+    "csv_fields_sanitized": 0,
+    "integrity_checks_pass": 0,
+    "integrity_checks_fail": 0,
+}
+
+
+def bump_stat(key, amount=1):
+    """Thread-safe increment of a live security counter."""
+    with SECURITY_STATS_LOCK:
+        SECURITY_STATS[key] = SECURITY_STATS.get(key, 0) + amount
+
+
+def get_stats_snapshot():
+    """Thread-safe read of all live security counters."""
+    with SECURITY_STATS_LOCK:
+        return dict(SECURITY_STATS)
+
+
+def sanitize_serial_input(raw_line):
+    """Input validation for data coming from the serial port.
+
+    Rejects lines that are too long or that contain control/non-printable
+    characters before they ever reach the parser. This is basic defense
+    against a malfunctioning, spoofed, or malicious serial device sending
+    unexpected data (e.g. escape sequences, huge payloads)."""
+    if not raw_line:
+        return None
+    if len(raw_line) > MAX_LINE_LENGTH:
+        bump_stat("packets_rejected_length")
+        audit_log(f"[SECURITY] Rejected oversized serial line ({len(raw_line)} chars)")
+        return None
+    if not ALLOWED_LINE_CHARS.match(raw_line):
+        bump_stat("packets_rejected_chars")
+        audit_log("[SECURITY] Rejected serial line with non-printable characters")
+        return None
+    bump_stat("packets_validated")
+    return raw_line
+
+
+def sanitize_csv_field(value):
+    """CSV/formula-injection protection.
+
+    Excel, LibreOffice and Google Sheets will treat a cell starting with
+    =, +, - or @ as a formula when the CSV is opened. Since this field
+    ultimately originates from an external serial device (or manual edit),
+    it is untrusted input; prefix it with a single quote so spreadsheet
+    software always renders it as plain text instead of executing it."""
+    text = "" if value is None else str(value)
+    if text and text[0] in ('=', '+', '-', '@'):
+        bump_stat("csv_fields_sanitized")
+        return "'" + text
+    return text
+
+
+def is_valid_date_str(date_str):
+    """Validates a date string before it is used to build a filename,
+    preventing path traversal / directory injection via a crafted value."""
+    return bool(DATE_STR_PATTERN.match(date_str))
+
+
+def sha256_of_file(path):
+    """Computes a SHA-256 checksum of a file for integrity/tamper detection."""
+    h = hashlib.sha256()
+    try:
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
+
+
+def write_checksum_file(csv_path):
+    """Writes/refreshes a .sha256 sidecar file next to a CSV log so its
+    integrity can be verified later (tamper-evidence for lab data)."""
+    digest = sha256_of_file(csv_path)
+    if digest:
+        try:
+            with open(csv_path + ".sha256", "w", encoding='utf-8') as f:
+                f.write(f"{digest}  {os.path.basename(csv_path)}\n")
+            secure_file_permissions(csv_path + ".sha256")
+        except Exception:
+            pass
+
+
+def verify_checksum_file(csv_path):
+    """Verifies a CSV log against its saved .sha256 checksum.
+
+    Returns True (matches), False (tampered/corrupted), or None (no
+    checksum on record yet, e.g. first run)."""
+    checksum_path = csv_path + ".sha256"
+    if not os.path.isfile(checksum_path):
+        return None
+    try:
+        with open(checksum_path, "r", encoding='utf-8') as f:
+            saved = f.read().split()[0]
+        return saved == sha256_of_file(csv_path)
+    except Exception:
+        return None
+
+
+def secure_file_permissions(path):
+    """Restricts a log/backup file to owner read+write only. Defense in
+    depth against other local accounts on the same machine reading or
+    tampering with logged lab data."""
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+
+
+def audit_log(event):
+    """Appends a timestamped entry to a local audit trail (connections,
+    manual edits, integrity failures) so activity on the log files is
+    traceable after the fact."""
+    try:
+        with open(AUDIT_LOG_PATH, "a", encoding='utf-8') as f:
+            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {event}\n")
+        secure_file_permissions(AUDIT_LOG_PATH)
+    except Exception:
+        pass
+
 
 def parse_fluke_data(raw_line):
     parts = [p.strip() for p in raw_line.split(',')]
@@ -75,11 +211,13 @@ def listen_to_port(port_name, port_stop_event):
     try:
         ser = serial.Serial(port_name, BAUD_RATE, timeout=1)
         msg_queue.put({"type": "status", "msg": f"[SUCCESS] Connected to {port_name}."})
+        audit_log(f"[CONNECTED] {port_name}")
 
         while not port_stop_event.is_set():
             try:
                 if ser.in_waiting > 0:
                     raw_line = ser.readline().decode('utf-8', errors='ignore').strip()
+                    raw_line = sanitize_serial_input(raw_line)  # input validation
                     if raw_line:
                         parsed_data = parse_fluke_data(raw_line)
                         msg_queue.put({"type": "data", "port": port_name,
@@ -87,6 +225,7 @@ def listen_to_port(port_name, port_stop_event):
                         })
             except (OSError, serial.SerialException) as e:
                 msg_queue.put({"type": "status", "msg": f"[DISCONNECTED] {port_name} removed."})
+                audit_log(f"[DISCONNECTED] {port_name}: {e}")
                 close_reason = "disconnected"
                 break
             time.sleep(0.1)
@@ -111,11 +250,44 @@ def listen_to_port(port_name, port_stop_event):
             pass
         msg_queue.put({"type": "port_closed", "port": port_name, "reason": close_reason})
 
+
+def demo_data_generator(stop_event):
+    """Generates synthetic Fluke-format readings so the whole app - including
+    its security controls - can be demonstrated without any physical sensor
+    or serial cable attached.
+    Every reading is pushed through the exact same sanitize_serial_input() /
+    parse_fluke_data() pipeline a real device's data would go through, so
+    this is a faithful demo, not a shortcut around the security logic. Every
+    9th cycle intentionally sends a deliberately oversized/garbled line so a
+    viewer can watch input validation reject it in real time."""
+    cycle = 0
+    while not stop_event.is_set():
+        cycle += 1
+        if cycle % 9 == 0:
+            # Deliberately malformed sample - demonstrates input validation.
+            bad_line = "".join(random.choice("\x00\x01\x02#$%") for _ in range(40)) + ("Z" * 600)
+            result = sanitize_serial_input(bad_line)
+            if result is None:
+                msg_queue.put({"type": "status",
+                    "msg": "[DEMO] Simulated malformed packet was rejected by input validation."})
+        else:
+            t1 = round(random.uniform(18.0, 26.0), 1)
+            h1 = round(random.uniform(30.0, 60.0), 1)
+            t2 = round(random.uniform(18.0, 26.0), 1)
+            h2 = round(random.uniform(30.0, 60.0), 1)
+            line = f"{t1} C,{h1} %RH,{t2} C,{h2} %RH"
+            raw_line = sanitize_serial_input(line)
+            if raw_line:
+                parsed_data = parse_fluke_data(raw_line)
+                msg_queue.put({"type": "data", "port": "DEMO-SIM", "parsed": parsed_data})
+        time.sleep(2)
+
+
 class FlukeLoggerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Temperature & Humidity Sensor - RSPK Services Lab")
-        self.root.geometry("1000x650")
+        self.root.title("Temperature & Humidity Sensor - RSPK Services Lab | Cybersecurity-Hardened Edition")
+        self.root.geometry("1050x700")
         self.current_date = datetime.now().strftime('%Y-%m-%d')
         self.trees = {}
         self.logging_active = False
@@ -128,13 +300,18 @@ class FlukeLoggerApp:
         
         self.csv_files = {} 
         self.csv_writers = {} 
-        
+
+        self.demo_mode_active = False
+        self.demo_stop_event = None
+        self.demo_thread = None
+
         self.setup_ui()
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.process_queue()        
         self.load_existing_data()
         self.auto_save_all()        
         self.root.after(100, self.start_logging)
+        self.root.after(1000, self.refresh_security_dashboard)
 
     def setup_ui(self):
         BG_COLOR = "grey"
@@ -182,7 +359,7 @@ class FlukeLoggerApp:
         title_lbl = tk.Label(center_text_frame, text="RSPK Services Lab Islamabad", font=("Arial", 18, "bold"), fg=TEXT_COLOR, bg=BG_COLOR)
         title_lbl.pack(side=tk.TOP, anchor=tk.CENTER)
         
-        subtitle_lbl = tk.Label(center_text_frame, text="Fluke Automated Data Logger", font=("Arial", 12, "italic"), fg=TEXT_COLOR, bg=BG_COLOR)
+        subtitle_lbl = tk.Label(center_text_frame, text="Fluke Automated Data Logger — Cybersecurity-Hardened Edition", font=("Arial", 12, "italic"), fg=TEXT_COLOR, bg=BG_COLOR)
         subtitle_lbl.pack(side=tk.TOP, anchor=tk.CENTER, pady=(2, 0))
 
         right_img_lbl = tk.Label(header_frame, image=self.right_logo, bg=BG_COLOR, bd=0, highlightthickness=0)
@@ -195,12 +372,15 @@ class FlukeLoggerApp:
         self.start_btn.pack(side=tk.LEFT, padx=10)
         self.stop_btn = tk.Button(btn_frame, text="Stop Logging", command=self.stop_logging, bg="red", fg="white", font=("Arial", 10, "bold"), width=15, state=tk.DISABLED)
         self.stop_btn.pack(side=tk.LEFT, padx=10)
+        self.demo_btn = tk.Button(btn_frame, text="Start Demo Mode (No Hardware)", command=self.toggle_demo_mode, bg="purple", fg="white", font=("Arial", 10, "bold"), width=28)
+        self.demo_btn.pack(side=tk.LEFT, padx=10)
         
         self.status_label = tk.Label(btn_frame, text="Auto-save: Active", font=("Arial", 9), fg="dark green", bg=BG_COLOR)
         self.status_label.pack(side=tk.RIGHT, padx=15)
 
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)        
+        self.notebook.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
+        self.add_security_dashboard_tab()
         self.add_day_tab(self.current_date)
 
     def add_day_tab(self, date_str):
@@ -237,8 +417,161 @@ class FlukeLoggerApp:
         self.open_csv_file(date_str)        
         self.notebook.select(frame)
 
+    def add_security_dashboard_tab(self):
+        frame = ttk.Frame(self.notebook)
+        self.notebook.add(frame, text="Security Dashboard")
+
+        intro = tk.Label(frame, text="Cybersecurity Controls — Live Status",
+                          font=("Arial", 13, "bold"), anchor="w")
+        intro.pack(fill=tk.X, padx=10, pady=(10, 0))
+
+        stats_frame = ttk.LabelFrame(frame, text="Input Validation & Injection Prevention")
+        stats_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        self.stat_labels = {}
+        stat_rows = [
+            ("packets_validated", "Packets validated & accepted"),
+            ("packets_rejected_length", "Packets rejected (oversized)"),
+            ("packets_rejected_chars", "Packets rejected (invalid characters)"),
+            ("csv_fields_sanitized", "CSV/formula-injection fields sanitized"),
+            ("integrity_checks_pass", "Integrity checks passed"),
+            ("integrity_checks_fail", "Integrity checks FAILED"),
+        ]
+        for i, (key, label) in enumerate(stat_rows):
+            r, c = divmod(i, 2)
+            row_frame = tk.Frame(stats_frame)
+            row_frame.grid(row=r, column=c, sticky="w", padx=15, pady=4)
+            tk.Label(row_frame, text=label + ":", font=("Arial", 9)).pack(side=tk.LEFT)
+            val_lbl = tk.Label(row_frame, text="0", font=("Arial", 9, "bold"), fg="dark blue")
+            val_lbl.pack(side=tk.LEFT, padx=(5, 0))
+            self.stat_labels[key] = val_lbl
+
+        controls_frame = tk.Frame(frame)
+        controls_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+        tk.Button(controls_frame, text="Run Full Integrity Check Now",
+                  command=self.run_integrity_check_now, bg="dark blue", fg="white",
+                  font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(0, 10))
+
+        integrity_frame = ttk.LabelFrame(frame, text="File Integrity Status (SHA-256)")
+        integrity_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+        self.integrity_tree = ttk.Treeview(integrity_frame, columns=("date", "status"),
+                                            show="headings", height=4)
+        self.integrity_tree.heading("date", text="Date / File")
+        self.integrity_tree.heading("status", text="Status")
+        self.integrity_tree.column("date", width=200, anchor=tk.W)
+        self.integrity_tree.column("status", width=150, anchor=tk.CENTER)
+        self.integrity_tree.pack(fill=tk.X, padx=10, pady=5)
+
+        audit_frame = ttk.LabelFrame(frame, text="Audit Log (live tail — audit_log.txt)")
+        audit_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        self.audit_text = scrolledtext.ScrolledText(audit_frame, height=8, font=("Consolas", 9),
+                                                      state=tk.DISABLED, wrap=tk.NONE)
+        self.audit_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+    def refresh_security_dashboard(self):
+        """Periodically refreshes the counters, integrity table, and audit
+        log tail on the Security Dashboard tab."""
+        try:
+            stats = get_stats_snapshot()
+            for key, lbl in self.stat_labels.items():
+                value = stats.get(key, 0)
+                lbl.config(text=str(value))
+                if key == "integrity_checks_fail":
+                    lbl.config(fg="red" if value > 0 else "dark blue")
+
+            # Per-file integrity table
+            for row in self.integrity_tree.get_children():
+                self.integrity_tree.delete(row)
+            for date_str in sorted(self.trees.keys()):
+                filename = os.path.join(BASE_DIR, f"Fluke_Log_{date_str}.csv")
+                if not os.path.isfile(filename):
+                    continue
+                result = verify_checksum_file(filename)
+                if result is True:
+                    status_text, tag = "OK — verified", "ok"
+                elif result is False:
+                    status_text, tag = "MISMATCH — possible tampering", "bad"
+                else:
+                    status_text, tag = "No checksum yet", "unknown"
+                self.integrity_tree.insert("", tk.END, values=(f"Fluke_Log_{date_str}.csv", status_text), tags=(tag,))
+            self.integrity_tree.tag_configure("ok", foreground="dark green")
+            self.integrity_tree.tag_configure("bad", foreground="red")
+            self.integrity_tree.tag_configure("unknown", foreground="grey")
+
+            # Audit log tail
+            if os.path.isfile(AUDIT_LOG_PATH):
+                with open(AUDIT_LOG_PATH, "r", encoding="utf-8") as f:
+                    lines = f.readlines()[-200:]
+                self.audit_text.config(state=tk.NORMAL)
+                self.audit_text.delete("1.0", tk.END)
+                self.audit_text.insert(tk.END, "".join(lines))
+                self.audit_text.see(tk.END)
+                self.audit_text.config(state=tk.DISABLED)
+        except Exception as e:
+            print(f"Dashboard refresh error: {e}")
+
+        self.root.after(2000, self.refresh_security_dashboard)
+
+    def run_integrity_check_now(self):
+        """Manually verifies every known CSV log against its saved SHA-256
+        checksum, reports the result, then refreshes the baseline checksum
+        so the next check reflects the current (now-verified) state."""
+        checked = 0
+        failed = 0
+        for date_str in list(self.trees.keys()):
+            if not is_valid_date_str(date_str):
+                continue
+            filename = os.path.join(BASE_DIR, f"Fluke_Log_{date_str}.csv")
+            if not os.path.isfile(filename):
+                continue
+            result = verify_checksum_file(filename)
+            checked += 1
+            if result is False:
+                failed += 1
+                bump_stat("integrity_checks_fail")
+                audit_log(f"[SECURITY] Manual integrity check FAILED for {filename}")
+            elif result is True:
+                bump_stat("integrity_checks_pass")
+            write_checksum_file(filename)  # refresh baseline after reporting
+        audit_log(f"[SECURITY] Manual integrity check complete: {checked} file(s) checked, {failed} failure(s)")
+        messagebox.showinfo("Integrity Check Complete",
+            f"Checked {checked} file(s).\n{failed} integrity failure(s) detected.\n"
+            f"See the Security Dashboard and audit_log.txt for details.")
+        self.refresh_security_dashboard()
+
+    def toggle_demo_mode(self):
+        if self.demo_mode_active:
+            self.stop_demo_mode()
+        else:
+            self.start_demo_mode()
+
+    def start_demo_mode(self):
+        if self.demo_mode_active:
+            return
+        self.demo_mode_active = True
+        self.demo_stop_event = threading.Event()
+        self.demo_thread = threading.Thread(target=demo_data_generator,
+                                             args=(self.demo_stop_event,), daemon=True)
+        self.demo_thread.start()
+        self.demo_btn.config(text="Stop Demo Mode", bg="dark red")
+        self.status_label.config(text="Demo Mode Active — simulated data, no hardware", fg="purple")
+        audit_log("[DEMO] Simulation mode started (no hardware)")
+
+    def stop_demo_mode(self):
+        if not self.demo_mode_active:
+            return
+        self.demo_mode_active = False
+        if self.demo_stop_event:
+            self.demo_stop_event.set()
+        self.demo_btn.config(text="Start Demo Mode (No Hardware)", bg="purple")
+        self.status_label.config(text="Demo Mode Stopped", fg="orange")
+        audit_log("[DEMO] Simulation mode stopped")
+
     def open_csv_file(self, date_str):
         """Open or create CSV file for the given date"""
+        if not is_valid_date_str(date_str):  # security: reject unexpected filenames
+            audit_log(f"[SECURITY] Rejected invalid date_str for CSV open: {date_str!r}")
+            return
         filename = os.path.join(BASE_DIR, f"Fluke_Log_{date_str}.csv")
         
         file_exists = os.path.isfile(filename)        
@@ -248,15 +581,30 @@ class FlukeLoggerApp:
         if not file_exists:
             writer.writerow(['Date', 'Time', 'COM_Port', 'Temp_1', 'Hum_1', 'Temp_2', 'Hum_2'])
             csv_file.flush()
-        
+
+        secure_file_permissions(filename)  # security: owner-only file permissions
         self.csv_files[date_str] = csv_file
         self.csv_writers[date_str] = writer
 
     def load_existing_data(self):
         """Load existing data from CSV files into the treeview"""
         for date_str in list(self.trees.keys()):
+            if not is_valid_date_str(date_str):
+                continue
             filename = os.path.join(BASE_DIR, f"Fluke_Log_{date_str}.csv")
             if os.path.isfile(filename):
+                # security: verify the file wasn't tampered with since last checksum
+                integrity = verify_checksum_file(filename)
+                if integrity is False:
+                    bump_stat("integrity_checks_fail")
+                    audit_log(f"[SECURITY] Checksum mismatch on load: {filename}")
+                    messagebox.showwarning(
+                        "Integrity Check Failed",
+                        f"The log file for {date_str} does not match its saved checksum.\n"
+                        f"It may have been modified outside this application."
+                    )
+                elif integrity is True:
+                    bump_stat("integrity_checks_pass")
                 try:
                     with open(filename, 'r', encoding='utf-8') as file:
                         reader = csv.reader(file)
@@ -284,14 +632,17 @@ class FlukeLoggerApp:
         
         new_value = simpledialog.askstring("Edit Data", f"Modify {column_name}:", initialvalue=current_value)
         if new_value is not None:
+            new_value = sanitize_csv_field(new_value)  # security: block CSV/formula injection
             current_values = list(active_tree.item(selected_iid, 'values'))
             current_values[col_index] = new_value
             active_tree.item(selected_iid, values=current_values)
             self.pending_save = True
             self.last_save_time[current_date_str] = 0
+            audit_log(f"[EDIT] {current_date_str} row edited: column={column_name!r} new_value={new_value!r}")
 
     def append_to_csv(self, date_str, row_data):
         """Append a single row to the CSV file"""
+        row_data = tuple(sanitize_csv_field(v) for v in row_data)  # security: CSV injection guard
         try:
             writer = self.csv_writers.get(date_str)
             if writer:
@@ -313,6 +664,8 @@ class FlukeLoggerApp:
 
     def create_backup(self, date_str):
         """Create a backup of the CSV file"""
+        if not is_valid_date_str(date_str):  # security: filename validation
+            return False
         try:
             source_file = os.path.join(BASE_DIR, f"Fluke_Log_{date_str}.csv")
             if os.path.isfile(source_file):
@@ -320,6 +673,8 @@ class FlukeLoggerApp:
                 with open(source_file, 'r', encoding='utf-8') as src:
                     with open(backup_file, 'w', encoding='utf-8') as dst:
                         dst.write(src.read())
+                secure_file_permissions(backup_file)  # security: owner-only permissions
+                write_checksum_file(backup_file)       # security: integrity checksum
                 return True
         except Exception as e:
             print(f"Backup creation failed for {date_str}: {e}")
@@ -344,12 +699,17 @@ class FlukeLoggerApp:
                         if date_str in self.csv_files:
                             self.csv_files[date_str].close()
                         
+                        rows = [[sanitize_csv_field(v) for v in row] for row in rows]  # security: CSV injection guard
+
                         with open(filename, 'w', newline='', encoding='utf-8') as file:
                             writer = csv.writer(file)
                             writer.writerow(['Date', 'Time', 'COM_Port', 'Temp_1', 'Hum_1', 'Temp_2', 'Hum_2'])
                             writer.writerows(rows)
                             file.flush()
-                        
+
+                        secure_file_permissions(filename)  # security: owner-only permissions
+                        write_checksum_file(filename)       # security: refresh integrity checksum
+
                         self.open_csv_file(date_str)
                         self.create_backup(date_str)
                         
@@ -446,6 +806,8 @@ class FlukeLoggerApp:
         """Called when the user closes the window. Stops all listener threads and
         performs a final save of all data."""
         self.logging_active = False
+        if self.demo_mode_active:
+            self.stop_demo_mode()
         for port_name, (t, port_stop_event) in list(self.port_threads.items()):
             port_stop_event.set()
         
@@ -460,6 +822,7 @@ class FlukeLoggerApp:
                 
                 if rows:
                     filename = os.path.join(BASE_DIR, f"Fluke_Log_{date_str}.csv")
+                    rows = [[sanitize_csv_field(v) for v in row] for row in rows]  # security: CSV injection guard
                     
                     if date_str in self.csv_files:
                         self.csv_files[date_str].close()
@@ -468,7 +831,9 @@ class FlukeLoggerApp:
                         writer = csv.writer(file)
                         writer.writerow(['Date', 'Time', 'COM_Port', 'Temp_1', 'Hum_1', 'Temp_2', 'Hum_2'])
                         writer.writerows(rows)
-                    
+
+                    secure_file_permissions(filename)  # security: owner-only permissions
+                    write_checksum_file(filename)       # security: refresh integrity checksum
                     self.create_backup(date_str)
                     final_save_count += 1
                     
@@ -486,7 +851,8 @@ class FlukeLoggerApp:
                 csv_file.close()
             except:
                 pass
-        
+
+        audit_log("[SHUTDOWN] Application closed, final save complete")
         self.root.destroy()
 
 if __name__ == '__main__':
