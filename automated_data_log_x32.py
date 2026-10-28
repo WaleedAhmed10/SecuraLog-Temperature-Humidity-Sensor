@@ -15,7 +15,6 @@ import hashlib
 import re
 import random
 from datetime import datetime
-from PIL import Image, ImageTk
 
 BAUD_RATE = 9600
 PORT_SCAN_INTERVAL = 2
@@ -321,7 +320,7 @@ def demo_data_generator(stop_event):
 class FlukeLoggerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Temperature & Humidity Sensor - RSPK Services Lab | Cybersecurity-Hardened Edition")
+        self.root.title("Secura Temperature and Humidity Sensor")
         self.root.geometry("1050x700")
         self.current_date = datetime.now().strftime('%Y-%m-%d')
         self.trees = {}
@@ -357,49 +356,21 @@ class FlukeLoggerApp:
         style = ttk.Style()
         style.theme_use("clam")
         style.configure("TNotebook", background=BG_COLOR, borderwidth=0)
-        style.configure("TNotebook.Tab", background="#A0A0A0", foreground="black", font=("Arial", 10, "bold"), padding=[10, 2])
+        style.configure("TNotebook.Tab", background="#A0A0A0", foreground="black",
+                        font=("Arial", 10, "bold"), padding=[10, 2])
         style.map("TNotebook.Tab", background=[("selected", LOGS_BG)])
         style.configure("TFrame", background=BG_COLOR)
-        style.configure("Treeview", background=LOGS_BG, fieldbackground=LOGS_BG, foreground="black", rowheight=25)
-        style.configure("Treeview.Heading", background="#A0A0A0", foreground="black", font=("Arial", 10, "bold"))
-
-        try:
-            left_org = Image.open(os.path.join(BASE_DIR, "Pakistan.png"))
-            left_resized = left_org.resize((110, 60))
-            self.left_logo = ImageTk.PhotoImage(left_resized)
-        except Exception as e:
-            self.left_logo = None
-            messagebox.showwarning("Logo Missing", "Could not load Pakistan.png:\n{0}".format(e))
-
-        try:
-            right_org = Image.open(os.path.join(BASE_DIR, "R&S.jfif"))
-            right_resized = right_org.resize((80, 60))
-            self.right_logo = ImageTk.PhotoImage(right_resized)
-        except Exception as e:
-            self.right_logo = None
-            messagebox.showwarning("Logo Missing", "Could not load R&S.jfif:\n{0}".format(e))
+        style.configure("Treeview", background=LOGS_BG, fieldbackground=LOGS_BG,
+                        foreground="black", rowheight=25)
+        style.configure("Treeview.Heading", background="#A0A0A0", foreground="black",
+                        font=("Arial", 10, "bold"))
 
         header_frame = tk.Frame(self.root, bg=BG_COLOR)
         header_frame.pack(fill=tk.X, pady=(15, 5))
-        header_frame.columnconfigure(0, weight=0)
-        header_frame.columnconfigure(1, weight=1)
-        header_frame.columnconfigure(2, weight=0)
 
-        left_img_lbl = tk.Label(header_frame, image=self.left_logo, bg=BG_COLOR, bd=0, highlightthickness=0)
-        left_img_lbl.grid(row=0, column=0, padx=20, sticky="w")
-
-        center_text_frame = tk.Frame(header_frame, bg=BG_COLOR)
-        center_text_frame.grid(row=0, column=1)
-
-
-        title_lbl = tk.Label(center_text_frame, text="RSPK Services Lab Islamabad", font=("Arial", 18, "bold"), fg=TEXT_COLOR, bg=BG_COLOR)
+        title_lbl = tk.Label(header_frame, text="Secura Temperature and Humidity Sensor",
+                             font=("Arial", 18, "bold"), fg=TEXT_COLOR, bg=BG_COLOR)
         title_lbl.pack(side=tk.TOP, anchor=tk.CENTER)
-
-        subtitle_lbl = tk.Label(center_text_frame, text="Fluke Automated Data Logger - Cybersecurity-Hardened Edition", font=("Arial", 12, "italic"), fg=TEXT_COLOR, bg=BG_COLOR)
-        subtitle_lbl.pack(side=tk.TOP, anchor=tk.CENTER, pady=(2, 0))
-
-        right_img_lbl = tk.Label(header_frame, image=self.right_logo, bg=BG_COLOR, bd=0, highlightthickness=0)
-        right_img_lbl.grid(row=0, column=2, padx=20, sticky="e")
 
         btn_frame = tk.Frame(self.root, bg=BG_COLOR, pady=10)
         btn_frame.pack(fill=tk.X)

@@ -12,14 +12,12 @@ import hashlib
 import re
 import random
 from datetime import datetime
-from PIL import Image, ImageTk
 
 BAUD_RATE = 9600
 PORT_SCAN_INTERVAL = 20
 PORT_RETRY_COOLDOWN = 30
 MAX_LINE_LENGTH = 500
 ALLOWED_LINE_CHARS = re.compile(r'^[\x20-\x7E]*$')  # printable ASCII only
-DATE_STR_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
@@ -92,7 +90,12 @@ def sanitize_csv_field(value):
 def is_valid_date_str(date_str):
     """Validates a date string before it is used to build a filename,
     preventing path traversal / directory injection via a crafted value."""
-    return bool(DATE_STR_PATTERN.match(date_str))
+    if not isinstance(date_str, str):
+        return False
+    try:
+        return datetime.strptime(date_str, '%Y-%m-%d').strftime('%Y-%m-%d') == date_str
+    except ValueError:
+        return False
 
 
 def sha256_of_file(path):
@@ -286,7 +289,7 @@ def demo_data_generator(stop_event):
 class FlukeLoggerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Temperature & Humidity Sensor - RSPK Services Lab | Cybersecurity-Hardened Edition")
+        self.root.title("Secura Temperature and Humidity Sensor")
         self.root.geometry("1050x700")
         self.current_date = datetime.now().strftime('%Y-%m-%d')
         self.trees = {}
@@ -321,65 +324,69 @@ class FlukeLoggerApp:
         self.root.configure(bg=BG_COLOR)
         style = ttk.Style()
         style.theme_use("clam")
-        style.configure("TNotebook", background=BG_COLOR, borderwidth=0)
-        style.configure("TNotebook.Tab", background="#A0A0A0", foreground="black", font=("Arial", 10, "bold"), padding=[10, 2])
-        style.map("TNotebook.Tab", background=[("selected", LOGS_BG)])
+        style.configure("TNotebook", background=BG_COLOR, borderwidth=0, tabmargins=[0, 0, 0, 0])
+        style.configure("TNotebook.Tab", background="#A0A0A0", foreground="black",
+                        font=("Segoe UI", 10, "bold"), padding=[16, 8])
+        style.map("TNotebook.Tab",
+                  background=[("selected", LOGS_BG), ("active", "#A0A0A0")],
+                  foreground=[("selected", TEXT_COLOR)])
         style.configure("TFrame", background=BG_COLOR)
-        style.configure("Treeview", background=LOGS_BG, fieldbackground=LOGS_BG, foreground="black", rowheight=25)
-        style.configure("Treeview.Heading", background="#A0A0A0", foreground="black", font=("Arial", 10, "bold"))
+        style.configure("Treeview", background=LOGS_BG, fieldbackground=LOGS_BG,
+                        foreground="black", rowheight=32, borderwidth=0,
+                        font=("Segoe UI", 10))
+        style.configure("Treeview.Heading", background="#A0A0A0", foreground="black",
+                        font=("Segoe UI", 10, "bold"), padding=[8, 8])
+        style.map("Treeview",
+                  background=[("selected", TEXT_COLOR)],
+                  foreground=[("selected", LOGS_BG)])
+        style.configure("TLabel", background=BG_COLOR, foreground=TEXT_COLOR,
+                        font=("Segoe UI", 10))
+        style.configure("TLabelframe", background=BG_COLOR, foreground=TEXT_COLOR,
+                        bordercolor="#A0A0A0")
+        style.configure("TLabelframe.Label", background=BG_COLOR, foreground=TEXT_COLOR,
+                        font=("Segoe UI", 10, "bold"))
+        style.configure("Card.TLabelframe", background=LOGS_BG, foreground=TEXT_COLOR,
+                        bordercolor="#A0A0A0", relief="solid")
+        style.configure("Card.TLabelframe.Label", background=LOGS_BG, foreground=TEXT_COLOR,
+                        font=("Segoe UI", 10, "bold"))
 
-        try:
-            left_org = Image.open(os.path.join(BASE_DIR, "Pakistan.png"))
-            left_resized = left_org.resize((110, 60))
-            self.left_logo = ImageTk.PhotoImage(left_resized)
-        except Exception as e:
-            self.left_logo = None
-            messagebox.showwarning("Logo Missing", f"Could not load Pakistan.png:\n{e}")
+        header_frame = tk.Frame(self.root, bg=TEXT_COLOR, padx=24, pady=18)
+        header_frame.pack(fill=tk.X, padx=18, pady=(18, 12))
 
-        try:
-            right_org = Image.open(os.path.join(BASE_DIR, "R&S.jfif"))
-            right_resized = right_org.resize((80, 60))
-            self.right_logo = ImageTk.PhotoImage(right_resized)
-        except Exception as e:
-            self.right_logo = None
-            messagebox.showwarning("Logo Missing", f"Could not load R&S.jfif:\n{e}")
+        title_lbl = tk.Label(header_frame, text="Secura Temperature and Humidity Sensor",
+                             font=("Segoe UI", 21, "bold"), fg=LOGS_BG, bg=TEXT_COLOR)
+        title_lbl.pack(side=tk.TOP, anchor=tk.W)
 
-        header_frame = tk.Frame(self.root, bg=BG_COLOR)
-        header_frame.pack(fill=tk.X, pady=(15, 5))        
-        header_frame.columnconfigure(0, weight=0)
-        header_frame.columnconfigure(1, weight=1)
-        header_frame.columnconfigure(2, weight=0)
+        btn_frame = tk.Frame(self.root, bg=LOGS_BG, padx=12, pady=12)
+        btn_frame.pack(fill=tk.X, padx=18, pady=(0, 8))
 
-        left_img_lbl = tk.Label(header_frame, image=self.left_logo, bg=BG_COLOR, bd=0, highlightthickness=0)
-        left_img_lbl.grid(row=0, column=0, padx=20, sticky="w")
-
-        center_text_frame = tk.Frame(header_frame, bg=BG_COLOR)
-        center_text_frame.grid(row=0, column=1)
-
-        title_lbl = tk.Label(center_text_frame, text="RSPK Services Lab Islamabad", font=("Arial", 18, "bold"), fg=TEXT_COLOR, bg=BG_COLOR)
-        title_lbl.pack(side=tk.TOP, anchor=tk.CENTER)
+        button_options = {
+            "fg": "white",
+            "font": ("Segoe UI", 10, "bold"),
+            "relief": tk.FLAT,
+            "bd": 0,
+            "padx": 14,
+            "pady": 9,
+            "cursor": "hand2",
+        }
+        self.start_btn = tk.Button(btn_frame, text="Start Logging", command=self.start_logging,
+                                   bg="green", width=15, **button_options)
+        self.start_btn.pack(side=tk.LEFT, padx=(0, 8))
+        self.stop_btn = tk.Button(btn_frame, text="Stop Logging", command=self.stop_logging,
+                                  bg="red", width=15, state=tk.DISABLED, **button_options)
+        self.stop_btn.pack(side=tk.LEFT, padx=8)
+        self.demo_btn = tk.Button(btn_frame, text="Start Demo Mode (No Hardware)",
+                                  command=self.toggle_demo_mode, bg="purple", width=28,
+                                  **button_options)
+        self.demo_btn.pack(side=tk.LEFT, padx=8)
         
-        subtitle_lbl = tk.Label(center_text_frame, text="Fluke Automated Data Logger — Cybersecurity-Hardened Edition", font=("Arial", 12, "italic"), fg=TEXT_COLOR, bg=BG_COLOR)
-        subtitle_lbl.pack(side=tk.TOP, anchor=tk.CENTER, pady=(2, 0))
-
-        right_img_lbl = tk.Label(header_frame, image=self.right_logo, bg=BG_COLOR, bd=0, highlightthickness=0)
-        right_img_lbl.grid(row=0, column=2, padx=20, sticky="e")
-
-        btn_frame = tk.Frame(self.root, bg=BG_COLOR, pady=10)
-        btn_frame.pack(fill=tk.X)
-
-        self.start_btn = tk.Button(btn_frame, text="Start Logging", command=self.start_logging, bg="green", fg="white", font=("Arial", 10, "bold"), width=15)
-        self.start_btn.pack(side=tk.LEFT, padx=10)
-        self.stop_btn = tk.Button(btn_frame, text="Stop Logging", command=self.stop_logging, bg="red", fg="white", font=("Arial", 10, "bold"), width=15, state=tk.DISABLED)
-        self.stop_btn.pack(side=tk.LEFT, padx=10)
-        self.demo_btn = tk.Button(btn_frame, text="Start Demo Mode (No Hardware)", command=self.toggle_demo_mode, bg="purple", fg="white", font=("Arial", 10, "bold"), width=28)
-        self.demo_btn.pack(side=tk.LEFT, padx=10)
-        
-        self.status_label = tk.Label(btn_frame, text="Auto-save: Active", font=("Arial", 9), fg="dark green", bg=BG_COLOR)
-        self.status_label.pack(side=tk.RIGHT, padx=15)
+        self.status_label = tk.Label(btn_frame, text="Auto-save: Active",
+                                     font=("Segoe UI", 9, "bold"), fg="dark green",
+                                     bg=LOGS_BG, padx=8)
+        self.status_label.pack(side=tk.RIGHT, padx=8)
 
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
+        self.notebook.pack(expand=True, fill=tk.BOTH, padx=18, pady=(0, 18))
         self.add_security_dashboard_tab()
         self.add_day_tab(self.current_date)
 
@@ -421,12 +428,14 @@ class FlukeLoggerApp:
         frame = ttk.Frame(self.notebook)
         self.notebook.add(frame, text="Security Dashboard")
 
-        intro = tk.Label(frame, text="Cybersecurity Controls — Live Status",
-                          font=("Arial", 13, "bold"), anchor="w")
-        intro.pack(fill=tk.X, padx=10, pady=(10, 0))
+        intro = tk.Label(frame, text="Infosecurity Controls — Live Status",
+                         font=("Segoe UI", 14, "bold"), anchor="w",
+                         bg="grey", fg="dark blue")
+        intro.pack(fill=tk.X, padx=14, pady=(14, 2))
 
-        stats_frame = ttk.LabelFrame(frame, text="Input Validation & Injection Prevention")
-        stats_frame.pack(fill=tk.X, padx=10, pady=10)
+        stats_frame = ttk.LabelFrame(frame, text="Input Validation & Injection Prevention",
+                                     style="Card.TLabelframe", padding=10)
+        stats_frame.pack(fill=tk.X, padx=14, pady=8)
 
         self.stat_labels = {}
         stat_rows = [
@@ -439,34 +448,43 @@ class FlukeLoggerApp:
         ]
         for i, (key, label) in enumerate(stat_rows):
             r, c = divmod(i, 2)
-            row_frame = tk.Frame(stats_frame)
-            row_frame.grid(row=r, column=c, sticky="w", padx=15, pady=4)
-            tk.Label(row_frame, text=label + ":", font=("Arial", 9)).pack(side=tk.LEFT)
-            val_lbl = tk.Label(row_frame, text="0", font=("Arial", 9, "bold"), fg="dark blue")
-            val_lbl.pack(side=tk.LEFT, padx=(5, 0))
+            row_frame = tk.Frame(stats_frame, bg="white")
+            row_frame.grid(row=r, column=c, sticky="w", padx=15, pady=6)
+            tk.Label(row_frame, text=label + ":", font=("Segoe UI", 9),
+                     fg="dark blue", bg="white").pack(side=tk.LEFT)
+            val_lbl = tk.Label(row_frame, text="0", font=("Segoe UI", 10, "bold"),
+                               fg="dark blue", bg="white")
+            val_lbl.pack(side=tk.LEFT, padx=(7, 0))
             self.stat_labels[key] = val_lbl
 
-        controls_frame = tk.Frame(frame)
-        controls_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+        controls_frame = tk.Frame(frame, bg="grey")
+        controls_frame.pack(fill=tk.X, padx=14, pady=(0, 8))
         tk.Button(controls_frame, text="Run Full Integrity Check Now",
                   command=self.run_integrity_check_now, bg="dark blue", fg="white",
-                  font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(0, 10))
+                  font=("Segoe UI", 9, "bold"), relief=tk.FLAT, bd=0,
+                  padx=14, pady=8, cursor="hand2").pack(side=tk.LEFT, padx=(0, 10))
 
-        integrity_frame = ttk.LabelFrame(frame, text="File Integrity Status (SHA-256)")
-        integrity_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+        integrity_frame = ttk.LabelFrame(frame, text="File Integrity Status (SHA-256)",
+                                         style="Card.TLabelframe", padding=8)
+        integrity_frame.pack(fill=tk.X, padx=14, pady=(0, 8))
         self.integrity_tree = ttk.Treeview(integrity_frame, columns=("date", "status"),
                                             show="headings", height=4)
         self.integrity_tree.heading("date", text="Date / File")
         self.integrity_tree.heading("status", text="Status")
-        self.integrity_tree.column("date", width=200, anchor=tk.W)
-        self.integrity_tree.column("status", width=150, anchor=tk.CENTER)
-        self.integrity_tree.pack(fill=tk.X, padx=10, pady=5)
+        self.integrity_tree.column("date", width=260, anchor=tk.W)
+        self.integrity_tree.column("status", width=220, anchor=tk.CENTER)
+        self.integrity_tree.pack(fill=tk.X, padx=8, pady=6)
 
-        audit_frame = ttk.LabelFrame(frame, text="Audit Log (live tail — audit_log.txt)")
-        audit_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-        self.audit_text = scrolledtext.ScrolledText(audit_frame, height=8, font=("Consolas", 9),
-                                                      state=tk.DISABLED, wrap=tk.NONE)
-        self.audit_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        audit_frame = ttk.LabelFrame(frame, text="Audit Log (live tail — audit_log.txt)",
+                                     style="Card.TLabelframe", padding=8)
+        audit_frame.pack(fill=tk.BOTH, expand=True, padx=14, pady=(0, 14))
+        self.audit_text = scrolledtext.ScrolledText(
+            audit_frame, height=8, font=("Consolas", 9), state=tk.DISABLED,
+            wrap=tk.NONE, bg="white", fg="dark blue", insertbackground="dark blue",
+            selectbackground="dark blue", selectforeground="white", relief=tk.FLAT,
+            padx=8, pady=8
+        )
+        self.audit_text.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
 
     def refresh_security_dashboard(self):
         """Periodically refreshes the counters, integrity table, and audit
@@ -479,7 +497,6 @@ class FlukeLoggerApp:
                 if key == "integrity_checks_fail":
                     lbl.config(fg="red" if value > 0 else "dark blue")
 
-            # Per-file integrity table
             for row in self.integrity_tree.get_children():
                 self.integrity_tree.delete(row)
             for date_str in sorted(self.trees.keys()):
@@ -498,7 +515,6 @@ class FlukeLoggerApp:
             self.integrity_tree.tag_configure("bad", foreground="red")
             self.integrity_tree.tag_configure("unknown", foreground="grey")
 
-            # Audit log tail
             if os.path.isfile(AUDIT_LOG_PATH):
                 with open(AUDIT_LOG_PATH, "r", encoding="utf-8") as f:
                     lines = f.readlines()[-200:]
@@ -514,8 +530,8 @@ class FlukeLoggerApp:
 
     def run_integrity_check_now(self):
         """Manually verifies every known CSV log against its saved SHA-256
-        checksum, reports the result, then refreshes the baseline checksum
-        so the next check reflects the current (now-verified) state."""
+        checksum and reports the result. A failed check must not replace the
+        saved checksum, so the mismatch remains detectable on later checks."""
         checked = 0
         failed = 0
         for date_str in list(self.trees.keys()):
@@ -532,7 +548,8 @@ class FlukeLoggerApp:
                 audit_log(f"[SECURITY] Manual integrity check FAILED for {filename}")
             elif result is True:
                 bump_stat("integrity_checks_pass")
-            write_checksum_file(filename)  # refresh baseline after reporting
+            else:
+                write_checksum_file(filename)
         audit_log(f"[SECURITY] Manual integrity check complete: {checked} file(s) checked, {failed} failure(s)")
         messagebox.showinfo("Integrity Check Complete",
             f"Checked {checked} file(s).\n{failed} integrity failure(s) detected.\n"
@@ -593,7 +610,6 @@ class FlukeLoggerApp:
                 continue
             filename = os.path.join(BASE_DIR, f"Fluke_Log_{date_str}.csv")
             if os.path.isfile(filename):
-                # security: verify the file wasn't tampered with since last checksum
                 integrity = verify_checksum_file(filename)
                 if integrity is False:
                     bump_stat("integrity_checks_fail")
@@ -795,7 +811,7 @@ class FlukeLoggerApp:
 
     def stop_logging(self):
         self.logging_active = False
-        for port_name, (t, port_stop_event) in list(self.port_threads.items()):
+        for _, port_stop_event in list(self.port_threads.values()):
             port_stop_event.set()
         self.port_threads.clear()
         self.start_btn.config(state=tk.NORMAL)
@@ -808,7 +824,7 @@ class FlukeLoggerApp:
         self.logging_active = False
         if self.demo_mode_active:
             self.stop_demo_mode()
-        for port_name, (t, port_stop_event) in list(self.port_threads.items()):
+        for _, port_stop_event in list(self.port_threads.values()):
             port_stop_event.set()
         
         final_save_count = 0

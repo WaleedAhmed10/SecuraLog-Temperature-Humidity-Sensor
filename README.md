@@ -1,5 +1,4 @@
-# Temperature & Humidity Sensor Logger — RSPK Services Lab
-### Cybersecurity-Hardened Edition
+# Temperature & Humidity Sensor Logger
 
 Connects to a Fluke temperature & humidity sensor, shows live readings, and saves them to daily CSV files (opens in Excel).
 
@@ -45,28 +44,28 @@ Run each command from inside the project folder.
 
 **Windows (7–11):** install Python 3 from python.org (tick **"Add Python to PATH"**), then:
 ```
-pip install pyserial pillow
+pip install pyserial
 python automated_data_log_x64.py
 ```
 
 **Windows XP / Python 2.7:** install Python 2.7 (`C:\Python27`), then:
 ```
 C:\Python27\python.exe -m ensurepip
-C:\Python27\python.exe -m pip install pyserial pillow
+C:\Python27\python.exe -m pip install pyserial
 C:\Python27\python.exe automated_data_log_x32.py
 ```
 
 **Linux (Ubuntu/Debian):**
 ```
 sudo apt update && sudo apt install python3 python3-pip python3-tk
-pip3 install pyserial pillow
+pip3 install pyserial
 sudo usermod -aG dialout $USER     # then log out and back in
 python3 automated_data_log_x64.py
 ```
 
 **Mac:** install Python 3 from python.org (allow permissions if asked), then:
 ```
-pip3 install pyserial pillow
+pip3 install pyserial
 python3 automated_data_log_x64.py
 ```
 
@@ -89,7 +88,6 @@ python3 automated_data_log_x64.py
 
 - **Sensor not detected / port in use:** reseat the cable and close any other program using the sensor.
 - **"python is not recognized":** reinstall Python with "Add Python to PATH" ticked.
-- **Logo warning on start:** harmless; logging still works.
 - **Windows security warning:** More info → Run anyway.
 - **"Integrity Check Failed":** a log was edited outside the program. Verify the file, then click **Run Full Integrity Check Now** to refresh its checksum.
 
@@ -109,7 +107,6 @@ Output appears in `dist/`. Existing `dist/` builds predate the security update �
 ```
 automated_data_log_x64.py / _x32.py   Logger (Python 3 / 2.7)
 automated_data_log.spec / _x32.spec   PyInstaller build settings
-Pakistan.png, R&S.jfif                Header logos
 Fluke_Log_*.csv (+ .sha256)           Daily logs and checksums
 BACKUP_Fluke_Log_*.csv                Periodic backups
 audit_log.txt                         Security activity log (created on first run)
