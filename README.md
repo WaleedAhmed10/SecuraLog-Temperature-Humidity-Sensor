@@ -1,4 +1,4 @@
-# Temperature & Humidity Sensor Logger
+# SecuraLog Temperature & Humidity Sensor
 
 Connects to a Fluke temperature & humidity sensor, shows live readings, and saves them to daily CSV files (opens in Excel).
 
