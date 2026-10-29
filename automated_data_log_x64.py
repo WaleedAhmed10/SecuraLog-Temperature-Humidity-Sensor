@@ -289,7 +289,7 @@ def demo_data_generator(stop_event):
 class FlukeLoggerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Secura Temperature and Humidity Sensor")
+        self.root.title("SecuraLog Temperature and Humidity Sensor")
         self.root.geometry("1050x700")
         self.current_date = datetime.now().strftime('%Y-%m-%d')
         self.trees = {}
@@ -353,7 +353,7 @@ class FlukeLoggerApp:
         header_frame = tk.Frame(self.root, bg=TEXT_COLOR, padx=24, pady=18)
         header_frame.pack(fill=tk.X, padx=18, pady=(18, 12))
 
-        title_lbl = tk.Label(header_frame, text="Secura Temperature and Humidity Sensor",
+        title_lbl = tk.Label(header_frame, text="SecuraLog Temperature and Humidity Sensor",
                              font=("Segoe UI", 21, "bold"), fg=LOGS_BG, bg=TEXT_COLOR)
         title_lbl.pack(side=tk.TOP, anchor=tk.W)
 
